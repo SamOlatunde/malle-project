@@ -1,2 +1,0 @@
-switch from pickle to jsonl for meta data nad to practice working with larger datasets ( jsonl mihgt not be applicaable here, if yes -> json)
-used np.save to save embeddings and .npy filees because pickle is problematic when their is a mismatch of numpy versions. would require multiple changes in different modules 
