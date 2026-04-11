@@ -6,11 +6,15 @@ For fast pototyping experiemnets
 from typing import Any
 import os
 import numpy as np
+import torchvision.transforms.v2 as transforms
 import torchvision.io
-from torch import data
+import torch 
+from torch.utils.data import DataLoader
+
+
 input_dir = 'malle_dataset/original_images/'
 
-class Malle_Dataset:
+class Dataset(torch.utils.data.Dataset):
     '''
     Class: Malle_Dataset
     ---
@@ -56,7 +60,7 @@ class Malle_Dataset:
         '''
         return len(self.labels)
 
-    def __getitem__(self, idx: int, trans) -> Any:
+    def __getitem__(self, idx: int) -> Any:
         '''
         Member Function: __getitem__(self, idx: int) -> Any
         ---
@@ -68,7 +72,7 @@ class Malle_Dataset:
         '''
         image_path = os.path.join(input_dir, self.labels[idx])
         
-        img = torchvision.io.decode(image_path, mode='RGB')
+        img = torchvision.io.decode_image(image_path, mode='RGB')
         label = self.labels[idx]
 
         if self.transform:
@@ -79,6 +83,39 @@ class Malle_Dataset:
         return img, label 
 
 
+
+if __name__ == '__main__':
+    transform = transforms.Compose([
+    #the next 2 steps preserve aspect ratio, doesnt distort image, and matches imagenet training
+    transforms.ToImage(),
+    transforms.ToDtype(torch.float32, scale=True),
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],  # ImageNet stats
+                        std=[0.229, 0.224, 0.225])
+    ])
+    
+    Malle_Dataset = Dataset(transform = transform,
+        input_dir='malle_dataset/original_images/',
+        )
+    
+    batch_size = 16
+
+    DataLoader = DataLoader(dataset = Malle_Dataset, batch_size = batch_size)
+    
+    batch, _ = next(iter(DataLoader))
+        
+
+    print(" Batch Type:", type(batch))
+    print (" Batch Shape:", batch.shape, end='\n\n\n')
+
+    # for i in range(0,len(os.listdir('malle_dataset/original_images/')), batch_size):
+    #     batch, _ = next(iter(DataLoader))
+        
+
+    #     print(" Batch Type:", type(batch))
+    #     print (" Batch Shape:", batch.shape, end='\n\n\n')
 
 
 
