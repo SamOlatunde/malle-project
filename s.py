@@ -8,11 +8,54 @@ import os
 import numpy as np
 import torchvision.transforms.v2 as transforms
 import torchvision.io
+from torchvision.models import resnet50, ResNet50_Weights
+
 import torch 
 from torch.utils.data import DataLoader
 
 
 input_dir = 'malle_dataset/original_images/'
+
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+os.makedirs('embed_index_result/embeds', exist_ok=True)
+
+embed_path = 'embed_index_result/embeds/'
+
+#loadin pretrained resnet50
+resnet50 = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)#weights=ResNet50_Weights.IMAGENET1K_V1) # model for classification
+resnet50_feature_extractor = torch.nn.Sequential(*list(resnet50.children())[:-1]).to(device) # model to genenrate embeddings ( removed final classification layer)
+
+resnet50_feature_extractor.eval()
+
+
+def embed_batch(batch):
+    """ 
+    Function:
+    ---
+    Purpose:
+    ---
+    Params:
+    ---
+    Returns:
+    ---
+    Notes:
+   
+    """
+    batch = batch.to(device) #move batch to device model is on
+    
+    with torch.no_grad():
+        batch_embeds = resnet50_feature_extractor(batch) # embed (1,2048,1,1)
+    
+    #remove batch dimension, move to cpu,  convert to numpy because faiss only takes numpy
+    #embed = embed.squeeze().cpu().numpy() #shape (2048,)
+
+    # normalize ( we add 1e-10 to avoid dividing by zero in the rare situation were embed is a zero vector) 
+    #normalizing ensres magnitide is 1 which makes faiss indexflatip search focus on the direction of vectors
+    
+    #embed = embed / (np.linalg.norm(embed) + 1e-10) 
+    return batch_embeds
 
 class Dataset(torch.utils.data.Dataset):
     '''
@@ -83,6 +126,21 @@ class Dataset(torch.utils.data.Dataset):
         return img, label 
 
 
+def save_embeddings(filename, embeddings):
+    """ 
+    Function:
+    ---
+    Purpose:
+    ---
+    Params:
+    ---
+    Returns:
+    ---
+    Notes:
+
+    """
+    np.save(filename, embeddings)
+ 
 
 if __name__ == '__main__':
     transform = transforms.Compose([
@@ -104,18 +162,30 @@ if __name__ == '__main__':
 
     DataLoader = DataLoader(dataset = Malle_Dataset, batch_size = batch_size)
     
-    batch, _ = next(iter(DataLoader))
-        
+   
+    embeddings = []
 
-    print(" Batch Type:", type(batch))
-    print (" Batch Shape:", batch.shape, end='\n\n\n')
+    for batch, _ in DataLoader: #i in range(0,len(os.listdir('malle_dataset/original_images/')), batch_size):
+        # batch, _ = next(iter(DataLoader))    
+        # print(" Batch Type:", type(batch))
+        # print (" Batch Shape:", batch.shape, end='\n\n\n')
+         # print(" Batch Type:", type(batch))
+        # print (" Batch Shape:", batch.shape, end='\n\n\n')
+        batch_embeddings = embed_batch(batch)
 
-    # for i in range(0,len(os.listdir('malle_dataset/original_images/')), batch_size):
-    #     batch, _ = next(iter(DataLoader))
-        
+        embeddings.append(batch_embeddings)
+    
 
-    #     print(" Batch Type:", type(batch))
-    #     print (" Batch Shape:", batch.shape, end='\n\n\n')
+    embeddings = torch.cat(embeddings, dim=0) # concatenating batched tensors into one  big tensor (image_count, embeddings, 1, 1)
+    embeddings = embeddings.squeeze() #  remove of dimensions of size 1, output :(image_count, embeddings)
+
+    normalized_embeddings = torch.nn.functional.normalize(embeddings, p = 2, dim = 1) # dim = 1 means collapse accross the columns, makes sure we ompute unit vectors of embeddings
+    
+    normalize_embeddings = normalized_embeddings.cpu().numpy()
+    
+    
+
+       
 
 
 
