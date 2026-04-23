@@ -14,14 +14,14 @@ import torch
 from torch.utils.data import DataLoader
 
 
+
+
+np.set_printoptions(precision=4, suppress=True)
+
 input_dir = 'malle_dataset/original_images/'
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-os.makedirs('embed_index_result/embeds', exist_ok=True)
-
-embed_path = 'embed_index_result/embeds/'
 
 #loadin pretrained resnet50
 resnet50 = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)#weights=ResNet50_Weights.IMAGENET1K_V1) # model for classification
@@ -113,7 +113,7 @@ class Dataset(torch.utils.data.Dataset):
         ---
         Notes:
         '''
-        image_path = os.path.join(input_dir, self.labels[idx])
+        image_path = os.path.join(self.input_dir, self.labels[idx])
         
         img = torchvision.io.decode_image(image_path, mode='RGB')
         label = self.labels[idx]
@@ -126,18 +126,15 @@ class Dataset(torch.utils.data.Dataset):
         return img, label 
 
 
-def save_embeddings(filename, embeddings):
-    """ 
-    Function:
-    ---
-    Purpose:
-    ---
-    Params:
-    ---
-    Returns:
-    ---
-    Notes:
+def save_embeddings(filename:str, embeddings:np.ndarray):
+    """Saves embeddings to a binary file.
 
+    Args:
+        filename (str): The path where the file will be saved.
+        embeddings (np.ndarray): The numerical array to store.
+
+    Returns:
+       None
     """
     np.save(filename, embeddings)
  
@@ -161,8 +158,39 @@ if __name__ == '__main__':
     batch_size = 16
 
     DataLoader = DataLoader(dataset = Malle_Dataset, batch_size = batch_size)
+
+
+    # ''' verifying sameness:  converting to numpy then finding unit vectors VS finindg unit then converting to numpy''' 
+    # one, _ = next(iter(DataLoader))
+  
+    # np_first = embed_batch(one)
+    # torch_first = embed_batch(one)
     
+    # ''' np first routine '''
+    # np_first = np_first.squeeze().cpu().numpy() #shape (2048,)
+    # np_first = np_first / (np.linalg.norm(np_first) + 1e-10) 
+    
+    # ''' torch_first routine '''
+    # torch_first = torch_first.squeeze() #  remove of dimensions of size 1, output :(image_count, embeddings)
+    # torch_first = torch.nn.functional.normalize(torch_first, p = 2, dim = 0) # dim = 1 means collapse accross the columns, makes sure we ompute unit vectors of embeddings
+    # torch_first = torch_first.cpu().numpy()
+
+    
+    # print(np_first.shape)
+    # print(torch_first.shape)
+    
+    # print('All Close: ', np.allclose(np_first,torch_first))
+    # print(f'np Is zero: { np.array_equiv(np_first, 0)} \t', f' torch Is zero: { np.array_equiv(torch_first, 0)}')
    
+    # print('\n\n\n')
+
+    # print('np_first: ', np_first[85:95], end='\n\n\n')
+    # print('torch_first: ', torch_first[19:32], end='\n\n\n')
+     
+
+    # print("First ", np_first.max())
+    # print("Dot ", np.dot(np_first, torch_first))
+
     embeddings = []
 
     for batch, _ in DataLoader: #i in range(0,len(os.listdir('malle_dataset/original_images/')), batch_size):
@@ -181,7 +209,14 @@ if __name__ == '__main__':
 
     normalized_embeddings = torch.nn.functional.normalize(embeddings, p = 2, dim = 1) # dim = 1 means collapse accross the columns, makes sure we ompute unit vectors of embeddings
     
-    normalize_embeddings = normalized_embeddings.cpu().numpy()
+    print(normalized_embeddings.dtype)
+    normalized_embeddings = normalized_embeddings.cpu().numpy()
+    print(normalized_embeddings.dtype)
+    save_embeddings(filename='embeddings/resnet50_index.npy', embeddings=normalized_embeddings)
+
+    a = np.load('embeddings/resnet50_index.npy')
+
+    print(a.shape)
     
     
 
