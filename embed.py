@@ -87,7 +87,7 @@ def save_embeddings(filename:str, embeddings:np.ndarray):
     Returns:
        None
     """
-    np.save(f'embeddings/{filename}.npy', embeddings) # need to fix the way i change this
+    np.save(filename, embeddings) # need to fix the way i change this
 
 #input_dir should be the folder that contains pics to be embedded
 # query is a flag the indictes what type of image we are embedding.
@@ -128,7 +128,7 @@ def embed_folder(input_dir, outfile, batch_size, embed_engine: str ):
 
     normalized_embeddings = normalized_embeddings.cpu().numpy()
 
-    save_embeddings(filename=f'{embed_engine}_{outfile}', embeddings=normalized_embeddings) # need to change how i save this file
+    save_embeddings(filename=outfile, embeddings=normalized_embeddings) # need to change how i save this file
 
 def stream_jsonl(filename: str):
     """Yields one JSON object at a time from a .jsonl file."""
@@ -239,13 +239,13 @@ def extract_index_metadata(index_input_dir: str, index_outfile: str) -> dict:
 if __name__ == '__main__':
     # generate embeddings for orginal images (indexes)
     embed_folder(input_dir= input_dir,
-                outfile = 'index',
+                outfile = f'{embed_path}resnet50_index.py',
                 batch_size=16,
                 embed_engine='resnet50')
 
     ## generate embeddings for modified copies (queries)
     # embed_folder(input_dir= query_dir,
-    #             outfile = 'query',
+    #             outfile = f'{embed_path}resnet50_query.npy',
     #             batch_size=16,
     #             embed_engine='resnet50')
 
