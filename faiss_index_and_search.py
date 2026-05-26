@@ -1,4 +1,4 @@
-import pickle
+
 import faiss
 import numpy as np
 from embed import load_embeddings, load_jsonl
