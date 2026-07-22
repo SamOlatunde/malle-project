@@ -3,10 +3,13 @@ Module: hitl_ui.py
 
 User interface for Human in the Loop Verification
 '''
+import glob
 import streamlit as st
 from embed import load_jsonl
 
-results_path = 'results/resnet50_results.jsonl'
+
+result_files = sorted(glob.glob('results/*.jsonl'))
+results_path = st.selectbox('Results file', result_files)
 
 
 def extract_info(path: str) -> str:
@@ -39,6 +42,9 @@ load_results = st.cache_data(load_jsonl)
 # --- session state ---
 if 'idx' not in st.session_state:
     st.session_state.idx = 0
+if st.session_state.get('last_results_path') != results_path:
+    st.session_state.idx = 0
+    st.session_state.last_results_path = results_path
 
 # --- load all records (runs once, then cached) ---
 results = load_results(results_path)

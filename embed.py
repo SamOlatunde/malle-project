@@ -1,263 +1,211 @@
 """
-Module:
+Module: embed.py
 
-
+Embedding pipeline for the Malle dataset.
+All experiment knobs (dataset variant, ResNet layer, pooling strategy) are
+controlled exclusively via config.py — no edits needed here.
 """
-from PIL import Image
-import numpy as np
+
+import json
 import os
+
+import numpy as np
 import torch
-from torchvision.models import resnet50, ResNet50_Weights
 import torchvision.transforms.v2 as transforms
 from torch.utils.data import DataLoader
-import json
+
+import config
 from dataset import Dataset, safe_collatefn
-
-
-input_dir = 'malle_dataset/original_images/'
-query_dir = 'malle_dataset/modified_images/'
-os.makedirs('embeddings', exist_ok=True)
-embed_path = 'embeddings/'
+from model import build_feature_extractor
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-#loadin pretrained resnet50
-resnet50 = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)#weights=ResNet50_Weights.IMAGENET1K_V1) # model for classification
-resnet50_feature_extractor = torch.nn.Sequential(*list(resnet50.children())[:-1]).to(device) # model to genenrate embeddings ( removed final classification layer)
+extractor = build_feature_extractor(
+    config.MODEL_FAMILY,
+    device,
+    layer=getattr(config, 'LAYER', None),
+    pool=getattr(config, 'POOL', None),
+    sscd_checkpoint=getattr(config, 'SSCD_CHECKPOINT', None),
+    dinov3_model=getattr(config, 'DINOV3_HF_MODEL', None),
+)
 
-resnet50_feature_extractor.eval()
+# Image preprocessing — one recipe per model family, matching each model's
+# published inference transform. All three normalize with ImageNet mean/std;
+# they differ only in resize/crop behaviour:
+#   resnet50 — Resize(256) + CenterCrop(224)   (torchvision ImageNet eval)
+#   sscd     — Resize([320, 320])              (square/"skew", keeps batching
+#                                                simple; README also allows a
+#                                                288px-short-edge crop-free
+#                                                variant for single images)
+#   dinov3   — Resize((256, 256))              (facebookresearch/dinov3 README)
+_IMAGENET_NORMALIZE = transforms.Normalize(
+    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],
+)
 
-# Image preprocessing, transform maintains resnet channel order (C, H, W)
-transform = transforms.Compose([
-#the next 2 steps preserve aspect ratio, doesnt distort image, and matches imagenet training
-transforms.ToImage(),
-transforms.ToDtype(torch.float32, scale=True),
-transforms.Resize(256),
-transforms.CenterCrop(224),
+_TRANSFORMS = {
+    'resnet50': transforms.Compose([
+        transforms.ToImage(),
+        transforms.ToDtype(torch.float32, scale=True),
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        _IMAGENET_NORMALIZE,
+    ]),
+    'sscd': transforms.Compose([
+        transforms.ToImage(),
+        transforms.ToDtype(torch.float32, scale=True),
+        transforms.Resize([320, 320]),
+        _IMAGENET_NORMALIZE,
+    ]),
+    'dinov3': transforms.Compose([
+        transforms.ToImage(),
+        transforms.ToDtype(torch.float32, scale=True),
+        transforms.Resize([256, 256], antialias=True),
+        _IMAGENET_NORMALIZE,
+    ]),
+}
 
-transforms.Normalize(mean=[0.485, 0.456, 0.406],  # ImageNet stats
-                    std=[0.229, 0.224, 0.225])
-])
+transform = _TRANSFORMS[config.MODEL_FAMILY]
 
 
-def embed_batch(batch: torch.tensor):
-    """
-    Function:
-    ---
-    Purpose:
-    ---
-    Params:
-    ---
+def embed_batch(batch: torch.Tensor) -> torch.Tensor:
+    """Run one batch through the configured feature extractor.
+
+    Args:
+        batch: Float tensor of shape (B, C, H, W).
+
     Returns:
-    ---
-    Notes:
-
+        Flat embedding tensor of shape (B, D). Pooling (for resnet50) or
+        model-specific head logic (for sscd/dinov3) is handled inside the
+        `extractor` closure built by model.build_feature_extractor — this
+        function is family-agnostic.
     """
-    batch = batch.to(device) #move batch to device model is on
+    return extractor(batch)
 
-    with torch.no_grad():
-        batch_embeds = resnet50_feature_extractor(batch) # embed (1,2048,1,1)
-
-    return batch_embeds
 
 def load_embeddings(filename: str) -> np.ndarray:
-    """Loads embeddings from a binary file.
+    """Load embeddings from a .npy file.
 
     Args:
-        filename (str): The path to the file (without extension).
+        filename: Path to the .npy file (including extension).
 
     Returns:
-        np.ndarray: The numerical array loaded from the file.
-
-    Notes:
-        The function automatically appends '.npy' to the filename.
+        Numpy array of embeddings.
     """
-    return np.load(filename) # need to fix the way i save this
+    return np.load(filename)
 
-def save_embeddings(filename:str, embeddings:np.ndarray):
-    """Saves embeddings to a binary file.
+
+def save_embeddings(filename: str, embeddings: np.ndarray) -> None:
+    """Save embeddings to a .npy file.
 
     Args:
-        filename (str): The path where the file will be saved.
-        embeddings (np.ndarray): The numerical array to store.
-
-    Notes:
-        filename shouldn't include extension
-    Returns:
-       None
+        filename: Destination path (including .npy extension).
+        embeddings: Array to save.
     """
-    np.save(filename, embeddings) # need to fix the way i change this
+    np.save(filename, embeddings)
 
-#input_dir should be the folder that contains pics to be embedded
-# query is a flag the indictes what type of image we are embedding.
-def embed_folder(input_dir, outfile, batch_size, embed_engine: str ):
+
+def embed_folder(input_dir: str, outfile: str, batch_size: int) -> None:
+    """Embed all images in a folder and write normalised vectors to disk.
+
+    Args:
+        input_dir: Directory of images to embed.
+        outfile:   Destination .npy path for the resulting embeddings.
+        batch_size: DataLoader batch size.
     """
-    Function:
-    ---
-    Purpose:
-    ---
-    Params:
-    ---
-    Returns:
-    ---
-    Notes:
+    os.makedirs(os.path.dirname(outfile), exist_ok=True)
 
-    """
+    dataset    = Dataset(input_dir, transform=transform)
+    dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=safe_collatefn)
 
+    batches = []
+    for batch, _ in dataloader:
+        batches.append(embed_batch(batch))
 
-    ''' load and initialize model here'''
+    embeddings = torch.cat(batches, dim=0)
+    embeddings = embeddings.squeeze()
 
+    normalised = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+    save_embeddings(outfile, normalised.cpu().numpy())
 
-    Malle_Dataset = Dataset(input_dir, transform = transform)
-
-    dataLoader = DataLoader(dataset = Malle_Dataset, batch_size = batch_size, collate_fn = safe_collatefn)
-
-    embeddings = []
-
-    for batch, _ in dataLoader:
-       batch_embeddings = embed_batch(batch)
-
-       embeddings.append(batch_embeddings)
-
-
-    embeddings = torch.cat(embeddings, dim=0) # concatenating batched tensors into one  big tensor (image_count, embeddings, 1, 1)
-    embeddings = embeddings.squeeze() #  remove of dimensions of size 1, output :(image_count, embeddings)
-
-    normalized_embeddings = torch.nn.functional.normalize(embeddings, p = 2, dim = 1) # dim = 1 means collapse accross the columns, makes sure we ompute unit vectors of embeddings
-
-    normalized_embeddings = normalized_embeddings.cpu().numpy()
-
-    save_embeddings(filename=outfile, embeddings=normalized_embeddings) # need to change how i save this file
 
 def stream_jsonl(filename: str):
-    """Yields one JSON object at a time from a .jsonl file."""
+    """Yield one JSON object at a time from a .jsonl file."""
     with open(filename, 'r', encoding='utf-8') as f:
         for line in f:
             yield json.loads(line)
 
-def load_jsonl(filename: str):
-    """Loads data from a .jsonl file.
+
+def load_jsonl(filename: str) -> list[dict]:
+    """Load all records from a .jsonl file.
 
     Args:
         filename: Path to the .jsonl file.
 
     Returns:
-        list: A list of dictionaries.
+        List of dicts, one per line.
     """
-    data = []
     with open(filename, 'r', encoding='utf-8') as f:
-        for line in f:
-            data.append(json.loads(line))
-    return data
+        return [json.loads(line) for line in f]
 
 
-def extract_query_metadata(query_input_dir: str, query_outfile: str) -> dict:
+def extract_query_metadata(query_input_dir: str, query_outfile: str) -> None:
+    """Extract metadata for modified (query) images and write to a .jsonl file.
+
+    Each line: {"id", "class", "instance_id", "modifications", "path"}
+
+    Args:
+        query_input_dir: Folder containing modified images.
+        query_outfile:   Destination .jsonl path.
     """
-    Function: extract_query_metadata(input_dir: str, outfile: str) -> None
-    ---
-    Purpose: extracts query (modified) images metadata from a folder and upload them in a jsonl file
-    ---
-    Params:
-        query_input_dir: path to folder that stores images
-        query_outfile: path to folder that stores image metadata
-    ---
-    Returns: None
-    ---
-    Notes:
-        each line of the jsonl file is a json object that contains image metadata
-        query metadata object: {'id':idx, 'class': img_class, 'instance_id': img_name_list[1], 'modifications': mods, 'path': image_path  }
-    """
-    with open(query_outfile, 'a', encoding= 'utf-8') as f:
-        idx = 0 # used to assign unique id to images in a folder
-
-        for img_name in os.listdir(query_input_dir):
-
-            img_name_list = img_name.split('_') # brake downn img name
-
-            # extract img class from broken down img name
-            img_class = img_name_list[0]
-
-            # contrust img path with the housing directory and image name
+    os.makedirs(os.path.dirname(query_outfile), exist_ok=True)
+    with open(query_outfile, 'a', encoding='utf-8') as f:
+        for idx, img_name in enumerate(os.listdir(query_input_dir)):
+            parts     = img_name.split('_')
+            img_class = parts[0]
             image_path = os.path.join(query_input_dir, img_name)
-
-            mods = img_name_list[2:]
-
-            # separate last mod from extension
+            mods = parts[2:]
             mods[-1] = mods[-1].split('.')[0]
+            f.write(json.dumps({
+                'id': idx,
+                'class': img_class,
+                'instance_id': parts[1],
+                'modifications': mods,
+                'path': image_path,
+            }) + '\n')
 
-            f.write (
-                json.dumps({'id':idx, 'class': img_class, 'instance_id': img_name_list[1], 'modifications': mods, 'path': image_path  }) + '\n'
-                )
 
-            idx +=  1
+def extract_index_metadata(index_input_dir: str, index_outfile: str) -> None:
+    """Extract metadata for original (index) images and write to a .jsonl file.
 
+    Each line: {"id", "class", "instance_id", "path"}
 
-
-def extract_index_metadata(index_input_dir: str, index_outfile: str) -> dict:
+    Args:
+        index_input_dir: Folder containing original images.
+        index_outfile:   Destination .jsonl path.
     """
-    Function: extract_metadata(input_dir: str, outfile: str) -> None
-    ---
-    Purpose: extracts index (original) images metadata from a folder containing images and upload them in a jsonl file
-    ---
-    Params:
-        input_dir: path to folder that stores images
-        outfile: path to folder that stores image metadata
-    ---
-    Returns: None
-    ---
-    Notes:
-        each line of the jsonl file is a json object that contains image metadata
-        index metadata object: {'id':idx, 'class': img_class, 'instance_id': instance_id, 'path': image_path}
-    """
+    os.makedirs(os.path.dirname(index_outfile), exist_ok=True)
     with open(index_outfile, 'a', encoding='utf-8') as f:
-        idx = 0 # used to assign unique id to images in a folder
-
-        for img_name in os.listdir(index_input_dir):
-
-            img_name_list = img_name.split('_') # brake downn img name
-
-            # extract img class from broken down img name
-            img_class = img_name_list[0]
-
-            # contruct img path with the housing directory and image name
+        for idx, img_name in enumerate(os.listdir(index_input_dir)):
+            parts      = img_name.split('_')
+            img_class  = parts[0]
             image_path = os.path.join(index_input_dir, img_name)
-
-            # after splitting by '_' orginal images would have instance_id joined with extension (e.g. 2291.JPEG), this line extracts instance id
-            instance_id, _ = (img_name_list[-1]).rsplit('.',1)
-
-            f.write(
-                json.dumps( {'id':idx, 'class': img_class, 'instance_id': instance_id, 'path': image_path} ) + '\n'
-                )
-
-            idx +=  1
-
-
-
+            instance_id, _ = parts[-1].rsplit('.', 1)
+            f.write(json.dumps({
+                'id': idx,
+                'class': img_class,
+                'instance_id': instance_id,
+                'path': image_path,
+            }) + '\n')
 
 
 if __name__ == '__main__':
-    # generate embeddings for orginal images (indexes)
-    embed_folder(input_dir= input_dir,
-                outfile = f'{embed_path}resnet50_index.py',
-                batch_size=16,
-                embed_engine='resnet50')
+    # Embed index (original) images
+    embed_folder(config.INDEX_DIR, config.EMBED_INDEX, batch_size=16)
 
-    ## generate embeddings for modified copies (queries)
-    # embed_folder(input_dir= query_dir,
-    #             outfile = f'{embed_path}resnet50_query.npy',
-    #             batch_size=16,
-    #             embed_engine='resnet50')
+    # Embed query (modified) images
+    embed_folder(config.QUERY_DIR, config.EMBED_QUERY, batch_size=16)
 
-
-    # # meta_data generation
-    # #queryies
-    # extract_query_metadata(query_input_dir=query_dir, query_outfile='metadata/queries_metadata.jsonl')
-
-    # #index
-    # extract_index_metadata(index_input_dir=input_dir, index_outfile='metadata/index_metadata.jsonl')
-
-
-
-
-
+    # Generate metadata (only needed once per dataset variant)
+    extract_index_metadata(config.INDEX_DIR, config.INDEX_META)
+    extract_query_metadata(config.QUERY_DIR, config.QUERY_META)

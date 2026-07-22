@@ -1,4 +1,5 @@
-mallenv/
+.venv/
+venv/
 
 __pycache__/
 

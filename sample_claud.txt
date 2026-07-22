@@ -1,0 +1,86 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project overview
+
+Malle Project: an AI-powered content-similarity search system. Given a reference image, it finds
+transformed/duplicated copies among a corpus of "original" images. The current implementation
+generates a synthetic benchmark (originals + programmatically modified variants), embeds both sets
+with a ResNet50 feature extractor, indexes the embeddings with FAISS, and evaluates retrieval quality
+(Recall@k / Hit Rate@k). A Streamlit UI supports human-in-the-loop (HITL) inspection of query/match
+pairs.
+
+## Commands
+
+There is no build step, linter, or test suite configured — this is a research/experimentation
+pipeline run as a sequence of standalone scripts.
+
+Full pipeline, in order:
+
+```bash
+python extract_photos.py                  # sample images from imagenet-mini -> malle_dataset/original_images
+python generate_combination_modified.py    # generate modified_images_x<N> variants (or generate_modified.py for random variants)
+python embed.py                            # embed originals + query variants -> embeddings/*.npy, metadata/*.jsonl
+python faiss_index_and_search.py           # build FAISS index, run k-NN search -> results/*.jsonl
+python evaluate.py                         # Recall@k over results/*.jsonl (uses config.RESULTS)
+python temp_eval.py results/<file>.jsonl   # Hit Rate@k for an arbitrary results file
+```
+
+HITL viewers (Streamlit apps — pick one, they read from `results/`):
+
+```bash
+streamlit run list_st_hitl.py     # loads full results file into memory, cache via st.cache_data
+streamlit run offset_st_hitl.py   # indexes JSONL by byte offset, seeks per-record (for large files)
+```
+
+`phash.py` is a standalone perceptual-hash baseline for comparison against the ResNet50 pipeline; it
+still uses the old pickle-based format (`embed_index_result/`) and is not wired to `config.py`.
+
+## Architecture
+
+**`config.py` is the single source of truth.** Every other module derives its I/O paths from it —
+never hardcode dataset/embedding/index/result paths elsewhere. To run a new experiment, change
+`DATASET_VARIANT`, `LAYER`, or `POOL` in `config.py`; everything downstream (embedding files, FAISS
+index name, results file, `RUN_TAG`) is derived automatically.
+
+**Pipeline stages and their data contracts:**
+
+1. **`extract_photos.py`** — one-time sampling of `malle_dataset/original_images/` from
+   `imagenet-mini/`. Not config-driven.
+2. **`generate_modified.py` / `generate_combination_modified.py`** — produce modified query images
+   into `malle_dataset/modified_images_x<N>/`. `generate_modified.py` applies a random subset of
+   modifications per image; `generate_combination_modified.py` applies every combinatorial subset of
+   the 11 modification types (`MODIFICATION_COUNTS` controls which combination sizes `x<N>` get
+   generated — currently only `x1`). Both share the `apply_modification` dispatch and
+   `to_tensor`/`to_pil` conversions defined in `generate_modified.py`.
+3. **`dataset.py`** — `Dataset` is a generic `torch.utils.data.Dataset` over a flat image folder;
+   `safe_collatefn` drops corrupted images (returns `None` from `__getitem__`) instead of crashing
+   the DataLoader.
+4. **`model.py`** — builds a frozen ResNet50 trunk truncated at a configurable layer
+   (`_LAYER_CHILDREN_COUNT`), plus a separate pooling function (`_POOL_FN`: none/gap/3x3). Note the
+   `fc` layer requires manually inserting `nn.Flatten(1)` since ResNet50's real `forward()` flattens
+   inline between `avgpool` and `fc` (not a child module, so naively slicing `children()` breaks
+   shapes). `embed_batch` in `embed.py` only applies `pool_fn` when the feature map is still 4D,
+   since `avgpool`/`fc` outputs are already collapsed.
+5. **`embed.py`** — embeds a folder of images to L2-normalized vectors (`embed_folder`), and extracts
+   metadata from filenames into JSONL (`extract_index_metadata` / `extract_query_metadata`). Also
+   provides the shared `load_jsonl`/`stream_jsonl`/`load_embeddings`/`save_embeddings` helpers used
+   by every downstream script — treat this file as the shared I/O module, not just an entry point.
+6. **`faiss_index_and_search.py`** — builds an `IndexFlatIP` (inner product; valid because vectors
+   are pre-normalized, making this equivalent to cosine similarity) and writes top-k search results
+   to `config.RESULTS` as JSONL, one line per query with its top-k matches embedded.
+7. **`evaluate.py` / `temp_eval.py`** — compute retrieval metrics from a results JSONL. Both
+   distinguish instance-level vs. class-level correctness, and both require an instance match to
+   also match on class (prevents false positives when the same `instance_id` string appears under
+   different classes).
+
+**Filename convention carries ground truth.** Image filenames encode `{class}_{instance_id}` for
+originals and `{class}_{instance_id}_{modification_suffixes...}` for modified/query images
+(underscore-delimited). `embed.py`'s metadata extractors and the HITL UIs' `extract_info` all parse
+labels this way — if you change the naming scheme in the generators, update all three in lock-step.
+
+**Legacy/deprecated:** `phash.py` and the pickle-based `embed_index_result/` format predate the
+current `.npy`/`.jsonl` pipeline (see `how_to_proceed.txt` for the migration rationale — pickle was
+dropped due to numpy version-compatibility issues across environments). Don't extend the pickle
+format; follow the `config.py`-driven JSONL/`.npy` pattern for new work.

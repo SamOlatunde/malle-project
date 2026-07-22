@@ -1,57 +1,44 @@
-import pickle 
-import numpy as np
+"""
+Module: evaluate.py
 
-embed_path = 'embed_index_result/embeds/'
-index_path = 'embed_index_result/index/'
-result_path = 'embed_index_result/results/'
+Computes instance-level and class-level Recall@k from search results.
+All paths are derived from config.py — change knobs there, not here.
+"""
 
-with open(f'{result_path}faiss_resnet50_results.pkl', 'rb') as f:
-    results = pickle.load(f)
+import config
+from embed import load_jsonl
 
-k_list = [1,3,5,10,11]
+
+results = load_jsonl(config.RESULTS)
+
+k_list = [1, 3, 5, 10, 11]
 
 for k in k_list:
-    tp_instance = 0 # true positives for instance level recall
-    tp_class = 0 # true positives for instance level recall  
-    total = 0 # total number of queries
-
+    tp_instance = 0
+    tp_class    = 0
+    total       = 0
 
     for r in results:
         total += 1
+        true_class       = r['query_class']
+        true_instance_id = r['query_instance_id']
 
-        true_query_class = r['query_class']
-        true_query_instance_id = r['query_instance_id']
+        topk_classes   = [m['index_class']       for m in r['matches'][:k]]
+        topk_instances = [m['index_instance_id'] for m in r['matches'][:k]]
 
-        topk_classes = [ res['index_class'] for res in r['matches'][:k]]
-        topk_instances = [res['index_instance_id'] for res in r['matches'][:k]]
-        
-
-        '''if true_query_class in topk_classes:
-            tp_class += 1
-        
-        if true_query_instance_id in topk_instances:
-            tp_instance += 1'''
-        
-        is_counted_already = False
-
-        # we use the looped nested logic because an instance is only a correct prediction if it is from the right class. 
-        # This helps prevent counting  images that have the same instance_id but are from different classes
-        for claSS, instance  in zip(topk_classes, topk_instances):
-            # prevents recounting classes that appear move than once top-k results 
-            if true_query_class == claSS:
-                if is_counted_already == False:
-                    tp_class +=1
-                    is_counted_already = True
-                if true_query_instance_id == instance:
+        # A class match is counted once even if it appears multiple times in
+        # top-k. An instance is only counted correct when it also shares the
+        # right class (prevents false positives from same instance_id across
+        # different classes).
+        counted_class = False
+        for cls, inst in zip(topk_classes, topk_instances):
+            if true_class == cls:
+                if not counted_class:
+                    tp_class   += 1
+                    counted_class = True
+                if true_instance_id == inst:
                     tp_instance += 1
-        
-    instance_lvl_recall_at_k = tp_instance / total
-    class_lvl_recall_at_k = tp_class /( total)
 
-    print(f'resnet50 Instance level Recall@{k} = {instance_lvl_recall_at_k:.4f}')
-    print(f'resnet50 Class level Recall@{k} = {class_lvl_recall_at_k:.4f}', end='\n\n')
-
-
-
-
-
+    print(f'[{config.RUN_TAG} | variant={config.DATASET_VARIANT}]')
+    print(f'  Instance Recall@{k} = {tp_instance / total:.4f}')
+    print(f'  Class    Recall@{k} = {tp_class    / total:.4f}', end='\n\n')
